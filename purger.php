@@ -674,15 +674,94 @@ namespace rtCamp\WP\Nginx {
 		}
 
 		function true_purge_all(){
-			$this->unlinkRecursive(RT_WP_NGINX_HELPER_CACHE_PATH, false);
-			$this->log( "* * * * *" );
-			$this->log( "* Purged Everything!" );
-			$this->log( "* * * * *" );
+
+			// Clear cache using improved method. Fall back on old method if it fails
+            if ( ! $this->purge_fastcgi_cache() ) {
+                $this->unlinkRecursive(RT_WP_NGINX_HELPER_CACHE_PATH, false);
+            }
+
 		}
 
-		/** Source - http://stackoverflow.com/a/1360437/156336 **/		
-		
-		function unlinkRecursive( $dir, $deleteRootToo ) {
+		/**
+		 * Purge the FastCGI cache
+		 *
+		 * This function purges the fastcgi_cache using the built-in functionality of the
+		 * ngx_cache_purge module.
+         *
+         * Added by Drew Hammond <drew@alphagenetica.com>
+		 *
+		 * @since 1.9
+		 *
+		 * @param string $location (optional) URI of specific page to remove from cache. If not specified
+		 * site-wide cache will be flushed
+         * @param bool $async Whether to make the request asynchronously (true) with no impact to page load
+         * or blocking (false)
+		 *
+		 * @return bool True if cache was successfully cleared. False if not.
+		 */
+		function purge_fastcgi_cache( $location = null, $async = false ) {
+
+			$cache_purge_url = home_url('purge/');
+
+			if ( !empty($location) ) {
+				$cache_purge_url = trailingslashit( $cache_purge_url . $location );
+			}
+
+			$this->log( "* Purging cache via {$cache_purge_url}" );
+
+            $args = array();
+
+            if ( $async ) {
+                $args['blocking'] = false;
+            }
+
+			$result = wp_remote_get( $cache_purge_url, $args );
+
+            if ( is_wp_error( $result ) ) {
+                // Failure handling
+                $this->log( "* Failure clearing cache via {$cache_purge_url}. Make sure host is resolvable." );
+                return false;
+            }
+
+            // If Asynchronous request, don't wait around for response
+            if ( $async ) {
+                $this->log( "* Asynchronous request to clear cache. Not waiting for response." );
+                return true;
+            }
+
+			// Better handling of success/error response
+
+			switch ( $result['response']['code'] ) {
+				case 200:
+					$this->log( "* Cache purged successfully!" );
+					return true;
+				case 403:
+					$this->log( "* Permission error! Verify that the nginx user has permission to access your cache purge URL" );
+					return false;
+				case 404:
+					$this->log( "* Purge request returned 404. Is the purge location directive configured correctly for nginx? (Note: this also occurs if no cached files exist)" );
+					return false;
+				default:
+					$this->log( "* Unknown response code. Check error logs." );
+					return false;
+			}
+
+		}
+
+		/** Source - http://stackoverflow.com/a/1360437/156336 **/
+
+        /**
+         * Clear fcgi_cache via unlink
+         *
+         * This function will clear the fcgi_cache files by recursively deleting
+         * all files in the cache directory.
+         *
+         * @deprecated in favor of purge_fastcgi_cache()
+         *
+         * @param $dir
+         * @param $deleteRootToo
+         */
+        function unlinkRecursive( $dir, $deleteRootToo ) {
 			if ( ! $dh = opendir( $dir ) ) {
 				return;
 			}
